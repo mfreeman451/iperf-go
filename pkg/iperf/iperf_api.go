@@ -58,6 +58,7 @@ func (test *IperfTest) setSendState(state uint) int {
 	test.ctrlChan <- state
 	test.mu.Unlock()
 
+	// Send state to peer
 	bs := make([]byte, 4)
 	binary.LittleEndian.PutUint32(bs, uint32(state))
 	n, err := test.ctrlConn.Write(bs)
@@ -419,6 +420,7 @@ func (test *IperfTest) initTest() int {
 
 func (test *IperfTest) Init() {
 	test.protocols = append(test.protocols, new(TCPProto), new(rudpProto), new(kcpProto))
+	test.testMode = false
 }
 
 func (test *IperfTest) ParseArguments() int {
@@ -945,14 +947,15 @@ func (test *IperfTest) iperfPrintResults() {
 }
 
 // Gather statistics during a test.
-// Gather statistics during a test.
 func iperfStatsCallback(test *IperfTest) {
 	test.mu.Lock()
+
 	if test.done {
 		test.mu.Unlock()
 		test.chStats <- true
 		return
 	}
+
 	test.mu.Unlock()
 
 	for _, sp := range test.streams {

@@ -125,12 +125,16 @@ func (r *rudpProto) recv(sp *iperfStream) int {
 	if n < 0 {
 		return n
 	}
+
 	sp.mu.Lock() // Lock before updating shared fields
+
 	if sp.test.state == TEST_RUNNING {
 		sp.result.bytes_received += uint64(n)
 		sp.result.bytes_received_this_interval += uint64(n)
 	}
+
 	sp.mu.Unlock() // Unlock after updates
+
 	return n
 }
 
