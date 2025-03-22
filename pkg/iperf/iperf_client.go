@@ -134,95 +134,121 @@ func (test *IperfTest) clientEnd() {
 func (test *IperfTest) handleClientCtrlMsg() {
 	buf := make([]byte, 4)
 
-	for test.state != IPERF_DONE { // Exit before reading if done
-		if n, err := test.ctrlConn.Read(buf); err == nil {
-			state := binary.LittleEndian.Uint32(buf[:])
+	for {
+		test.mu.Lock()
+		if test.state == IPERF_DONE {
+			test.mu.Unlock()
+			return
+		}
+		test.mu.Unlock()
 
-			Log.Debugf("Client Ctrl conn receive n = %v state = [%v]", n, state)
-
-			test.state = uint(state)
-
-			Log.Infof("Client Enter %v state...", test.state)
-		} else {
+		Log.Debugf("handleClientCtrlMsg waiting for state")
+		n, err := test.ctrlConn.Read(buf)
+		if err != nil {
 			Log.Errorf("ctrl_conn read failed. err=%T, %v", err, err)
-
-			test.ctrlConn.Close()
+			test.mu.Lock()
+			test.state = IPERF_DONE
 			test.ctrlChan <- IPERF_DONE
-
+			test.mu.Unlock()
 			return
 		}
 
-		switch test.state {
+		state := binary.LittleEndian.Uint32(buf[:])
+		Log.Debugf("Client Ctrl conn receive n = %v state = [%v]", n, state)
+
+		test.mu.Lock()
+		test.state = uint(state)
+		test.mu.Unlock()
+
+		Log.Infof("Client Enter %v state...", state)
+
+		switch state {
 		case IPERF_EXCHANGE_PARAMS:
 			if rtn := test.exchangeParams(); rtn < 0 {
-				Log.Errorf("exchange_params failed. rtn = %v", rtn)
+				Log.Errorf("exchange_params failed: %v", rtn)
+				test.mu.Lock()
 				test.ctrlChan <- IPERF_DONE
-
+				test.mu.Unlock()
 				return
 			}
 		case IPERF_CREATE_STREAM:
 			if rtn := test.createStreams(); rtn < 0 {
-				Log.Errorf("create_streams failed. rtn = %v", rtn)
+				Log.Errorf("create_streams failed: %v", rtn)
+				test.mu.Lock()
 				test.ctrlChan <- IPERF_DONE
-
+				test.mu.Unlock()
 				return
 			}
 		case TEST_START:
 			if rtn := test.initTest(); rtn < 0 {
-				Log.Errorf("init_test failed. rtn = %v", rtn)
+				Log.Errorf("init_test failed: %v", rtn)
+				test.mu.Lock()
 				test.ctrlChan <- IPERF_DONE
-
+				test.mu.Unlock()
 				return
 			}
 			if rtn := test.createClientTimer(); rtn < 0 {
-				Log.Errorf("create_client_timer failed. rtn = %v", rtn)
+				Log.Errorf("create_client_timer failed: %v", rtn)
+				test.mu.Lock()
 				test.ctrlChan <- IPERF_DONE
-
+				test.mu.Unlock()
 				return
 			}
 			if rtn := test.createClientOmitTimer(); rtn < 0 {
-				Log.Errorf("create_client_omit_timer failed. rtn = %v", rtn)
+				Log.Errorf("create_client_omit_timer failed: %v", rtn)
+				test.mu.Lock()
 				test.ctrlChan <- IPERF_DONE
-
+				test.mu.Unlock()
 				return
 			}
 			if test.mode == IPERF_SENDER {
 				if rtn := test.createSenderTicker(); rtn < 0 {
-					Log.Errorf("create_sender_ticker failed. rtn = %v", rtn)
+					Log.Errorf("create_sender_ticker failed: %v", rtn)
+					test.mu.Lock()
 					test.ctrlChan <- IPERF_DONE
-
+					test.mu.Unlock()
 					return
 				}
 			}
-		case TEST_RUNNING:
+			test.mu.Lock()
 			test.ctrlChan <- TEST_RUNNING
+			test.mu.Unlock()
+		case TEST_RUNNING:
+			test.mu.Lock()
+			test.ctrlChan <- TEST_RUNNING
+			test.mu.Unlock()
 		case IPERF_EXCHANGE_RESULT:
 			if rtn := test.exchangeResults(); rtn < 0 {
-				Log.Errorf("exchange_results failed. rtn = %v", rtn)
+				Log.Errorf("exchange_results failed: %v", rtn)
+				test.mu.Lock()
 				test.ctrlChan <- IPERF_DONE
-
+				test.mu.Unlock()
 				return
 			}
 		case IPERF_DISPLAY_RESULT:
 			test.clientEnd()
 		case IPERF_DONE:
+			test.mu.Lock()
 			test.ctrlChan <- IPERF_DONE
-
+			test.mu.Unlock()
 			return
 		case SERVER_TERMINATE:
+			test.mu.Lock()
 			oldState := test.state
 			test.state = IPERF_DISPLAY_RESULT
+			test.mu.Unlock()
 			test.reporterCallback(test)
+			test.mu.Lock()
 			test.state = oldState
+			test.mu.Unlock()
 		default:
-			Log.Errorf("Unexpected situation with state = %v.", test.state)
+			Log.Errorf("Unexpected state %v", state)
+			test.mu.Lock()
 			test.ctrlChan <- IPERF_DONE
-
+			test.mu.Unlock()
 			return
 		}
 	}
-
-	test.ctrlChan <- IPERF_DONE // Ensure exit
 }
 
 func (test *IperfTest) ConnectServer() int {

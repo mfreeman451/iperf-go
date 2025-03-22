@@ -415,11 +415,11 @@ func TestDisplayResult(t *testing.T) {
 
 		for {
 			test.mu.Lock()
-			if test.state == IPERF_DONE {
-				test.mu.Unlock()
+			currentState := test.state
+			test.mu.Unlock()
+			if currentState == IPERF_DONE {
 				return
 			}
-			test.mu.Unlock()
 
 			select {
 			case state := <-test.ctrlChan:

@@ -52,7 +52,7 @@ func (test *IperfTest) handleServerCtrlMsg() {
 		}
 
 		state := binary.LittleEndian.Uint32(buf[:])
-		Log.Debugf("Ctrl conn received n = %v state = [%v]", n, state)
+		Log.Debugf("Ctrl conn received n = %v state = [%v], raw bytes = %v", n, state, buf[:n])
 
 		test.mu.Lock()
 		test.state = uint(state)
