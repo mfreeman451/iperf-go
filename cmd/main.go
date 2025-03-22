@@ -21,7 +21,7 @@ func main() {
 		iperf.Log.Errorf("parse arguments error: %v", rtn)
 	}
 
-	if rtn := test.RunTest(); rtn < 0 {
+	if rtn := test.RunTest(nil); rtn < 0 {
 		iperf.Log.Errorf("run test failed: %v", rtn)
 	}
 

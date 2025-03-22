@@ -2,10 +2,12 @@ package iperf
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,106 +31,103 @@ func (test *IperfTest) handleServerCtrlMsg() {
 	buf := make([]byte, 4) // only for ctrl state
 
 	for {
-		if n, err := test.ctrlConn.Read(buf); err == nil {
-			state := binary.LittleEndian.Uint32(buf[:])
-
-			Log.Debugf("Ctrl conn receive n = %v state = [%v]", n, state)
-			//if err != nil {
-			//	log.Errorf("Convert string to int failed. s = %v", string(buf[:n]))
-			//	return
-			//}
-
-			test.mu.Lock() // Lock before modifying state
-			test.state = uint(state)
-			test.mu.Unlock()
-		} else {
-			var serr *net.OpError
-
-			if errors.As(err, &serr) {
-				Log.Info("Client control connection close. err = %T %v", serr, serr)
-
-				err := test.ctrlConn.Close()
-				if err != nil {
-					Log.Errorf("Ctrl conn close failed. err = %v", err)
-
-					return
-				}
+		Log.Debugf("handleServerCtrlMsg waiting for control message")
+		n, err := test.ctrlConn.Read(buf)
+		if err != nil {
+			Log.Errorf("Ctrl conn read failed: %v", err)
+			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
+				Log.Infof("Client control connection closed")
+				test.mu.Lock()
+				test.state = IPERF_DONE
+				test.mu.Unlock()
+				test.ctrlChan <- IPERF_DONE
+				return
 			}
-
+			// Let defer in test handle closure to avoid double-close
+			test.mu.Lock()
+			test.state = SERVER_TERMINATE // Indicate error termination
+			test.mu.Unlock()
+			test.ctrlChan <- SERVER_TERMINATE
 			return
 		}
 
-		switch test.state {
+		state := binary.LittleEndian.Uint32(buf[:])
+		Log.Debugf("Ctrl conn received n = %v state = [%v]", n, state)
+
+		test.mu.Lock()
+		test.state = uint(state)
+		test.mu.Unlock()
+
+		Log.Infof("Server Enter state %v", state)
+
+		switch state {
 		case TEST_START:
-			break
+			Log.Debugf("Received TEST_START")
 		case TEST_END:
 			Log.Infof("Server Enter Test End state...")
-
+			test.mu.Lock()
 			test.done = true
-
+			test.mu.Unlock()
 			if test.statsCallback != nil {
 				test.statsCallback(test)
 			}
-
 			test.closeAllStreams()
-
-			/* exchange result mode */
 			if test.setSendState(IPERF_EXCHANGE_RESULT) < 0 {
-				Log.Errorf("set_send_state error")
-
+				Log.Errorf("set_send_state error for IPERF_EXCHANGE_RESULT")
+				test.mu.Lock()
+				test.state = SERVER_TERMINATE
+				test.mu.Unlock()
+				test.ctrlChan <- SERVER_TERMINATE
 				return
 			}
-
 			Log.Infof("Server Enter Exchange Result state...")
-
 			if test.exchangeResults() < 0 {
-				Log.Errorf("exchange result failed")
-
+				Log.Errorf("exchangeResults failed")
+				test.mu.Lock()
+				test.state = SERVER_TERMINATE
+				test.mu.Unlock()
+				test.ctrlChan <- SERVER_TERMINATE
 				return
 			}
-
-			/* display result mode */
 			if test.setSendState(IPERF_DISPLAY_RESULT) < 0 {
-				Log.Errorf("set_send_state error")
-
+				Log.Errorf("set_send_state error for IPERF_DISPLAY_RESULT")
+				test.mu.Lock()
+				test.state = SERVER_TERMINATE
+				test.mu.Unlock()
+				test.ctrlChan <- SERVER_TERMINATE
 				return
 			}
-
 			Log.Infof("Server Enter Display Result state...")
-			if test.reporterCallback != nil { // why call these again
+			if test.reporterCallback != nil {
 				test.reporterCallback(test)
 			}
-
-			//if test.display_results() < 0 {
-			//	log.Errorf("display result failed")
-			//	return
-			//}
-			// on_test_finish undo
 		case IPERF_DONE:
-			test.state = IPERF_DONE
-			Log.Debugf("Server reach IPERF_DONE")
-
-			test.ctrlChan <- IPERF_DONE
+			Log.Debugf("Server reached IPERF_DONE")
 			test.proto.teardown(test)
-
+			test.ctrlChan <- IPERF_DONE
 			return
-		case CLIENT_TERMINATE: //not used yet
+		case CLIENT_TERMINATE:
+			test.mu.Lock()
 			oldState := test.state
-
 			test.state = IPERF_DISPLAY_RESULT
+			test.mu.Unlock()
 			test.reporterCallback(test)
+			test.mu.Lock()
 			test.state = oldState
-
+			test.mu.Unlock()
 			test.closeAllStreams()
-
 			Log.Infof("Client is terminated.")
-
+			test.mu.Lock()
 			test.state = IPERF_DONE
-
-			break
+			test.mu.Unlock()
+			test.ctrlChan <- IPERF_DONE
+			return
 		default:
-			Log.Errorf("Unexpected situation with state = %v.", test.state)
-
+			Log.Errorf("Unexpected situation with state = %v", state)
+			test.mu.Lock()
+			test.state = SERVER_TERMINATE
+			test.mu.Unlock()
+			test.ctrlChan <- SERVER_TERMINATE
 			return
 		}
 	}
@@ -208,57 +207,65 @@ func (test *IperfTest) createServerOmitTimer() int {
 	return 0
 }
 
-func (test *IperfTest) runServer() int {
+func (test *IperfTest) runServer(wg *sync.WaitGroup) int {
 	Log.Debugf("Enter run_server")
 	if test.serverListen() < 0 {
 		Log.Error("Listen failed")
 		return -1
 	}
+
 	fmt.Printf("Server listening on %v\n", test.port)
+
+	test.mu.Lock()
 	test.state = IPERF_START
+	test.mu.Unlock()
+
 	Log.Info("Enter Iperf start state...")
 	test.ctrlChan <- IPERF_START // Signal that server is ready
 
 	conn, err := test.listener.Accept() // Now safe to block here
 	if err != nil {
-		Log.Error("Accept failed")
+		Log.Errorf("Accept failed: %v", err)
 		return -2
 	}
+
 	test.ctrlConn = conn
+	err = test.ctrlConn.SetDeadline(time.Now().Add(30 * time.Second))
+	if err != nil {
+		Log.Errorf("Set deadline failed: %v", err)
+
+		return 0
+	}
+
 	fmt.Printf("Accept connection from client: %v\n", conn.RemoteAddr())
 
-	// exchange params
+	// Exchange params
 	if test.setSendState(IPERF_EXCHANGE_PARAMS) < 0 {
 		Log.Error("set_send_state error.")
-
 		return -3
 	}
 
 	Log.Info("Enter Exchange Params state...")
-
 	if test.exchangeParams() < 0 {
-		Log.Error("exchange params failed.")
-
+		Log.Errorf("exchange params failed: %v", err)
 		return -3
 	}
 
-	go test.handleServerCtrlMsg() // coroutine handle control msg
+	go test.handleServerCtrlMsg() // Coroutine to handle control messages
 
-	if test.isServer == true {
+	if test.isServer {
 		listener, err := test.proto.listen(test)
 		if err != nil {
-			Log.Error("proto listen error.")
-
+			Log.Errorf("proto listen error: %v", err)
 			return -4
 		}
-
 		test.protoListener = listener
+		Log.Debugf("Protocol listener established on port %d", test.port)
 	}
 
-	// create streams
+	// Create streams
 	if test.setSendState(IPERF_CREATE_STREAM) < 0 {
 		Log.Error("set_send_state error.")
-
 		return -3
 	}
 
@@ -266,28 +273,30 @@ func (test *IperfTest) runServer() int {
 
 	var isIperfDone = false
 
-	for isIperfDone != true {
+	for !isIperfDone {
 		select {
 		case state := <-test.ctrlChan:
 			Log.Debugf("Ctrl channel receive state [%v]", state)
 
-			if state == IPERF_DONE {
+			switch state {
+			case IPERF_DONE:
+				Log.Infof("Received IPERF_DONE, shutting down server")
+				isIperfDone = true
 				return 0
-			} else if state == IPERF_CREATE_STREAM {
+
+			case IPERF_CREATE_STREAM:
 				var streamNum uint = 0
 
 				for streamNum < test.streamNum {
 					protoConn, err := test.proto.accept(test)
 					if err != nil {
-						Log.Error("proto accept error.")
-
+						Log.Errorf("proto accept error: %v", err)
 						return -4
 					}
 
 					streamNum++
 
 					var sp *iperfStream
-
 					if test.mode == IPERF_SENDER {
 						sp = test.newStream(protoConn, SENDER_STREAM)
 					} else {
@@ -295,8 +304,7 @@ func (test *IperfTest) runServer() int {
 					}
 
 					if sp == nil {
-						Log.Error("Create new strema failed.")
-
+						Log.Error("Create new stream failed.")
 						return -4
 					}
 
@@ -304,13 +312,19 @@ func (test *IperfTest) runServer() int {
 					test.streams = append(test.streams, sp)
 					test.mu.Unlock()
 
-					Log.Debugf("create new stream, stream_num = %v, target stream num = %v", streamNum, test.streamNum)
+					Log.Debugf("Created stream %d of %d", streamNum, test.streamNum)
 				}
 
 				if streamNum == test.streamNum {
-					if test.setSendState(TEST_START) != 0 {
-						Log.Errorf("set_send_state error")
+					Log.Infof("All %d streams created successfully", streamNum)
+					if wg != nil {
+						wg.Done() // Signal that all streams are created
+						wg = nil  // Prevent multiple Done() calls
+						Log.Debugf("Signaled WaitGroup completion")
+					}
 
+					if test.setSendState(TEST_START) != 0 {
+						Log.Errorf("set_send_state error for TEST_START")
 						return -5
 					}
 
@@ -318,64 +332,58 @@ func (test *IperfTest) runServer() int {
 
 					if test.initTest() < 0 {
 						Log.Errorf("Init test failed.")
-
 						return -5
 					}
 
 					if test.createServerTimer() < 0 {
 						Log.Errorf("Create Server timer failed.")
-
 						return -6
 					}
 
 					if test.createServerOmitTimer() < 0 {
-						Log.Errorf("Create Server Omit timer failed.")
-
+						Log.Errorf("Create Server omit timer failed.")
 						return -7
 					}
 
 					if test.mode == IPERF_SENDER {
 						if rtn := test.createSenderTicker(); rtn < 0 {
 							Log.Errorf("create_sender_ticker failed. rtn = %v", rtn)
-
 							return -7
 						}
 					}
 
 					if test.setSendState(TEST_RUNNING) != 0 {
-						Log.Errorf("set_send_state error")
-
+						Log.Errorf("set_send_state error for TEST_RUNNING")
 						return -8
 					}
 				}
-			} else if state == TEST_RUNNING {
-				// Regular mode. Server receives.
+
+			case TEST_RUNNING:
+				// Regular mode. Server receives or sends based on mode.
 				Log.Info("Enter Test Running state...")
 
 				for i, sp := range test.streams {
 					if sp.role == SENDER_STREAM {
 						go sp.iperfSend(test)
-
-						Log.Infof("Server Stream %v start sending.", i)
+						Log.Infof("Server Stream %d start sending.", i)
 					} else {
 						go sp.iperfRecv(test)
-
-						Log.Infof("Server Stream %v start receiving.", i)
+						Log.Infof("Server Stream %d start receiving.", i)
 					}
 				}
 
-				Log.Info("Server all streams start...")
-			} else if state == TEST_END {
+				Log.Info("Server all streams started...")
+
+			case TEST_END:
+				Log.Debugf("Received TEST_END, continuing to wait for next state")
 				continue
-			} else if state == IPERF_DONE {
-				isIperfDone = true
-			} else {
-				Log.Debugf("Channel Unhandle state [%v]", state)
+
+			default:
+				Log.Debugf("Channel unhandled state [%v]", state)
 			}
 		}
 	}
 
 	Log.Debugf("Server side done.")
-
 	return 0
 }

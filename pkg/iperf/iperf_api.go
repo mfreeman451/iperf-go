@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/op/go-logging"
@@ -39,22 +40,20 @@ func (test *IperfTest) setProtocol(protoName string) int {
 }
 
 func (test *IperfTest) setSendState(state uint) int {
+	test.mu.Lock()
 	test.state = state
 	test.ctrlChan <- test.state
+	test.mu.Unlock()
 
 	bs := make([]byte, 4)
 	binary.LittleEndian.PutUint32(bs, uint32(state))
 
-	//msg := fmt.Sprintf("%v", test.state)
 	n, err := test.ctrlConn.Write(bs)
 	if err != nil {
-		Log.Errorf("Write state error. %v %v", n, err)
-
+		Log.Errorf("Write state error: %v", err)
 		return -1
 	}
-
-	Log.Debugf("Set & send state = %v, n = %v", state, n)
-
+	Log.Debugf("Set & sent state = %v, n = %v", state, n)
 	return 0
 }
 
@@ -157,23 +156,42 @@ func (test *IperfTest) sendParams() int {
 	return 0
 }
 
+func (test *IperfTest) exchangeParams() int {
+	if test.isServer == false {
+		Log.Debugf("Client sending params")
+		if test.sendParams() < 0 {
+			Log.Errorf("Client sendParams failed")
+			return -1
+		}
+		Log.Debugf("Client sent params successfully")
+	} else {
+		Log.Debugf("Server getting params")
+		if test.getParams() < 0 {
+			Log.Errorf("Server getParams failed")
+			return -1
+		}
+		Log.Debugf("Server received params successfully")
+	}
+	return 0
+}
+
 func (test *IperfTest) getParams() int {
 	Log.Debugf("Enter get_params")
 	var params stream_params
 
 	buf := make([]byte, 1024)
 
+	Log.Debugf("Server reading params from ctrlConn")
 	n, err := test.ctrlConn.Read(buf)
 	if err != nil {
-		Log.Errorf("Read failed. %v", err)
-
+		Log.Errorf("Read failed in getParams: %v", err)
 		return -1
 	}
+	Log.Debugf("Server read %d bytes", n)
 
 	err = json.Unmarshal(buf[:n], &params)
 	if err != nil {
-		Log.Errorf("Decode failed. %v", err)
-
+		Log.Errorf("Decode failed: %v", err)
 		return -1
 	}
 
@@ -200,20 +218,6 @@ func (test *IperfTest) getParams() int {
 	test.setting.fastResend = params.FastResend
 	test.setting.dataShards = params.DataShards
 	test.setting.parityShards = params.ParityShards
-	return 0
-}
-
-func (test *IperfTest) exchangeParams() int {
-	if test.isServer == false {
-		if test.sendParams() < 0 {
-			return -1
-		}
-	} else {
-		if test.getParams() < 0 {
-			return -1
-		}
-	}
-
 	return 0
 }
 
@@ -525,10 +529,10 @@ func (test *IperfTest) ParseArguments() int {
 	return 0
 }
 
-func (test *IperfTest) RunTest() int {
+func (test *IperfTest) RunTest(wg *sync.WaitGroup) int {
 	// server
 	if test.isServer == true {
-		rtn := test.runServer()
+		rtn := test.runServer(wg)
 		if rtn < 0 {
 			Log.Errorf("Run server failed. %v", rtn)
 

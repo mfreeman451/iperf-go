@@ -247,66 +247,54 @@ func (test *IperfTest) ConnectServer() int {
 }
 
 func (test *IperfTest) runClient() int {
-
-	rtn := test.ConnectServer()
-	if rtn < 0 {
-		Log.Errorf("ConnectServer failed")
-
-		return -1
+	Log.Infof("runClient starting")
+	if test.ctrlConn == nil { // Only connect if not already connected
+		rtn := test.ConnectServer()
+		if rtn < 0 {
+			Log.Errorf("ConnectServer failed: %d", rtn)
+			return -1
+		}
+		test.ctrlConn.SetDeadline(time.Now().Add(30 * time.Second))
 	}
 
 	go test.handleClientCtrlMsg()
 
-	var isIperfDone bool = false
+	var isIperfDone bool
+	var testEndNum uint
 
-	var testEndNum uint = 0
-
-	for isIperfDone != true {
+	for !isIperfDone {
 		select {
 		case state := <-test.ctrlChan:
+			Log.Debugf("runClient received state [%v]", state)
 			if state == TEST_RUNNING {
-				// set non-block for non-UDP test. unfinished
-				// Regular mode. Client sends.
 				Log.Info("Client enter Test Running state...")
 				for i, sp := range test.streams {
 					if sp.role == SENDER_STREAM {
 						go sp.iperfSend(test)
-
 						Log.Infof("Client Stream %v start sending.", i)
 					} else {
 						go sp.iperfRecv(test)
-
 						Log.Infof("Client Stream %v start receiving.", i)
 					}
 				}
-
 				Log.Info("Create all streams finish...")
 			} else if state == TEST_END {
 				testEndNum++
-
-				if testEndNum < test.streamNum || testEndNum == test.streamNum+1 { // redundant TEST_END signal generate by set_send_state
+				if testEndNum < test.streamNum || testEndNum == test.streamNum+1 {
 					continue
 				} else if testEndNum > test.streamNum+1 {
 					Log.Errorf("Receive more TEST_END signal than expected")
-
 					return -1
 				}
-
 				Log.Infof("Client all Stream closed.")
-
-				// test_end_num == test.stream_num. all the stream send TEST_END signal
 				test.done = true
-
 				if test.statsCallback != nil {
 					test.statsCallback(test)
 				}
-
 				if test.setSendState(TEST_END) < 0 {
-					Log.Errorf("set_send_state failed. %v", TEST_END)
-
+					Log.Errorf("set_send_state failed: %v", TEST_END)
 					return -1
 				}
-
 				Log.Info("Client Enter Test End State.")
 			} else if state == IPERF_DONE {
 				isIperfDone = true
@@ -316,5 +304,6 @@ func (test *IperfTest) runClient() int {
 		}
 	}
 
+	Log.Infof("runClient completed")
 	return 0
 }
