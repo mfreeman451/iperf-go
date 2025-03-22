@@ -2,6 +2,7 @@ package iperf
 
 import (
 	"encoding/binary"
+	"runtime/debug"
 	"sync"
 	"testing"
 	"time"
@@ -27,9 +28,8 @@ func SetupServer(t *testing.T) (*IperfTest, *sync.WaitGroup) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				Log.Errorf("Server goroutine panicked: %v", r)
+				Log.Errorf("Server goroutine panicked: %v\nStack trace: %s", r, debug.Stack())
 			}
-			wg.Done() // Ensure wg.Done() is called even on panic
 		}()
 		Log.Infof("Starting server on port %d", portServer)
 		if err := serverTest.runServer(wg); err != 0 {
@@ -411,7 +411,20 @@ func TestDisplayResult(t *testing.T) {
 			Log.Errorf("Client exchangeParams failed: %d", rtn)
 			return
 		}
-		Log.Infof("Client params sent")
+		Log.Infof("Client params sent successfully")
+
+		// Wait for server to acknowledge params
+		select {
+		case state := <-test.ctrlChan:
+			Log.Debugf("Client received initial state %v", state)
+			if state != IPERF_CREATE_STREAM {
+				Log.Errorf("Expected IPERF_CREATE_STREAM, got %v", state)
+				return
+			}
+		case <-time.After(10 * time.Second):
+			Log.Errorf("Timeout waiting for server response to params")
+			return
+		}
 
 		for {
 			test.mu.Lock()

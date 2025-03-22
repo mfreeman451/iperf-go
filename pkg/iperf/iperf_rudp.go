@@ -148,9 +148,7 @@ func (r *rudpProto) init(test *IperfTest) int {
 
 		err := sp.conn.(*RUDP.UDPSession).SetDSCP(46)
 		if err != nil {
-			Log.Errorf("r set dscp failed. err = %v", err)
-
-			return 0
+			Log.Errorf("r set dscp failed (non-critical). err = %v", err)
 		}
 
 		sp.conn.(*RUDP.UDPSession).SetMtu(1400)

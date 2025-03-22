@@ -136,23 +136,28 @@ func (test *IperfTest) sendParams() int {
 		Rate:          test.setting.rate,
 		PacingTime:    test.setting.pacingTime,
 	}
-
 	bytes, err := json.Marshal(&params)
 	if err != nil {
-		Log.Error("Encode params failed. %v", err)
+		Log.Errorf("Encode params failed: %v", err)
+		return -1
+	}
+	Log.Debugf("Sending params: %s, bytes = %x", params.String(), bytes)
 
+	// Prefix with length
+	length := make([]byte, 4)
+	binary.LittleEndian.PutUint32(length, uint32(len(bytes)))
+	_, err = test.ctrlConn.Write(length)
+	if err != nil {
+		Log.Errorf("Write length failed: %v", err)
 		return -1
 	}
 
 	n, err := test.ctrlConn.Write(bytes)
 	if err != nil {
-		Log.Error("Write failed. %v", err)
-
+		Log.Errorf("Write failed: %v", err)
 		return -1
 	}
-
-	Log.Debugf("send params %v bytes: %v", n, params.String())
-
+	Log.Debugf("Sent params %v bytes with length prefix", n)
 	return 0
 }
 
@@ -179,23 +184,31 @@ func (test *IperfTest) getParams() int {
 	Log.Debugf("Enter get_params")
 	var params stream_params
 
-	buf := make([]byte, 1024)
+	// Read length prefix
+	lengthBuf := make([]byte, 4)
+	_, err := io.ReadFull(test.ctrlConn, lengthBuf)
+	if err != nil {
+		Log.Errorf("Read length failed in getParams: %v", err)
+		return -1
+	}
+	length := binary.LittleEndian.Uint32(lengthBuf)
+	Log.Debugf("Received params length: %d", length)
 
-	Log.Debugf("Server reading params from ctrlConn")
-	n, err := test.ctrlConn.Read(buf)
+	// Read exact JSON data
+	buf := make([]byte, length)
+	_, err = io.ReadFull(test.ctrlConn, buf)
 	if err != nil {
 		Log.Errorf("Read failed in getParams: %v", err)
 		return -1
 	}
-	Log.Debugf("Server read %d bytes", n)
+	Log.Debugf("getParams read n = %d, bytes = %x, string = %s", len(buf), buf, buf)
 
-	err = json.Unmarshal(buf[:n], &params)
+	err = json.Unmarshal(buf, &params)
 	if err != nil {
 		Log.Errorf("Decode failed: %v", err)
 		return -1
 	}
-
-	Log.Debugf("get params %v bytes: %v", n, params.String())
+	Log.Debugf("get params: %v", params.String())
 
 	test.setProtocol(params.ProtoName)
 	test.setTestReverse(params.Reverse)
@@ -207,8 +220,6 @@ func (test *IperfTest) getParams() int {
 	test.setting.burst = params.Burst
 	test.setting.rate = params.Rate
 	test.setting.pacingTime = params.PacingTime
-
-	// rudp/kcp only
 	test.setting.sndWnd = params.SndWnd
 	test.setting.rcvWnd = params.RcvWnd
 	test.setting.writeBufSize = params.WriteBufSize
