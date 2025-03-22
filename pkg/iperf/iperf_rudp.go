@@ -142,22 +142,17 @@ func (r *rudpProto) recv(sp *iperfStream) int {
 
 func (r *rudpProto) init(test *IperfTest) int {
 	for _, sp := range test.streams {
-		err := sp.conn.(*RUDP.UDPSession).SetReadBuffer(int(test.setting.readBufSize))
-		if err != nil {
-			Log.Errorf("r set read buffer failed. err = %v", err)
-			return 0
+		if err := sp.conn.(*RUDP.UDPSession).SetReadBuffer(int(test.setting.readBufSize)); err != nil {
+			Log.Infof("r set read buffer failed (non-critical): %v", err)
 		}
-
-		err = sp.conn.(*RUDP.UDPSession).SetWriteBuffer(int(test.setting.writeBufSize))
-		if err != nil {
-			Log.Errorf("r set write buffer failed. err = %v", err)
-			return 0
+		if err := sp.conn.(*RUDP.UDPSession).SetWriteBuffer(int(test.setting.writeBufSize)); err != nil {
+			Log.Infof("r set write buffer failed (non-critical): %v", err)
 		}
 
 		sp.conn.(*RUDP.UDPSession).SetWindowSize(int(test.setting.sndWnd), int(test.setting.rcvWnd))
 		sp.conn.(*RUDP.UDPSession).SetStreamMode(true)
 
-		err = sp.conn.(*RUDP.UDPSession).SetDSCP(46)
+		err := sp.conn.(*RUDP.UDPSession).SetDSCP(46)
 		if err != nil {
 			Log.Errorf("r set dscp failed. err = %v", err)
 

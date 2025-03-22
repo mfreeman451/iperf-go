@@ -298,7 +298,9 @@ func (test *IperfTest) runServer() int {
 						return -4
 					}
 
+					test.mu.Lock()
 					test.streams = append(test.streams, sp)
+					test.mu.Unlock()
 
 					Log.Debugf("create new stream, stream_num = %v, target stream num = %v", streamNum, test.streamNum)
 				}

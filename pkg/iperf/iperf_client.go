@@ -9,6 +9,9 @@ import (
 )
 
 func (test *IperfTest) createStreams() int {
+	test.mu.Lock()
+	defer test.mu.Unlock()
+
 	for i := uint(0); i < test.streamNum; i++ {
 		conn, err := test.proto.connect(test)
 		if err != nil {

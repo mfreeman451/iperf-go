@@ -126,6 +126,9 @@ func CreateStreams(t *testing.T) int {
 		Log.Errorf("create_streams failed. rtn = %v", rtn)
 		return -1
 	}
+	clientTest.mu.Lock()
+	defer clientTest.mu.Unlock()
+
 	// check client state
 	assert.Equal(t, uint(len(clientTest.streams)), clientTest.streamNum)
 	for _, sp := range clientTest.streams {
@@ -541,10 +544,28 @@ func TestDisplayResult(t *testing.T) {
 
 	clientTest.clientEnd()
 
-	time.Sleep(time.Millisecond * 10) // wait for server
-	assert.Equal(t, clientTest.state, uint(IPERF_DONE))
-	assert.Equal(t, serverTest.state, uint(IPERF_DONE))
-	// check output with your own eyes
+	// Add timeout to prevent hang
+	done := make(chan struct{})
+	go func() {
+		clientTest.clientEnd()
+		close(done)
+	}()
+	select {
+	case <-done:
+		time.Sleep(time.Millisecond * 10) // wait for server
+		clientTest.mu.Lock()
+		serverTest.mu.Lock()
+		assert.Equal(t, clientTest.state, uint(IPERF_DONE))
+		assert.Equal(t, serverTest.state, uint(IPERF_DONE))
+		serverTest.mu.Unlock()
+		clientTest.mu.Unlock()
+	case <-time.After(10 * time.Second):
+		t.Fatal("Test timed out after 10 seconds")
+	}
 
-	time.Sleep(time.Second * 5) // wait for server
+	//time.Sleep(time.Millisecond * 10) // wait for server
+	//assert.Equal(t, clientTest.state, uint(IPERF_DONE))
+	//assert.Equal(t, serverTest.state, uint(IPERF_DONE))
+	// check output with your own eyes
+	//time.Sleep(time.Second * 5) // wait for server
 }
