@@ -524,14 +524,14 @@ func (test *IperfTest) ParseArguments() int {
 	}
 
 	if *debugFlag == true {
-		logging.SetLevel(logging.DEBUG, "iperf")
-		logging.SetLevel(logging.DEBUG, "rudp")
+		SetLogLevelSafe(logging.DEBUG, "iperf")
+		SetLogLevelSafe(logging.DEBUG, "rudp")
 	} else if *infoFlag == true {
-		logging.SetLevel(logging.INFO, "iperf")
-		logging.SetLevel(logging.INFO, "rudp")
+		SetLogLevelSafe(logging.INFO, "iperf")
+		SetLogLevelSafe(logging.INFO, "rudp")
 	} else {
-		logging.SetLevel(logging.ERROR, "iperf")
-		logging.SetLevel(logging.ERROR, "rudp")
+		SetLogLevelSafe(logging.ERROR, "iperf")
+		SetLogLevelSafe(logging.ERROR, "rudp")
 	}
 
 	// pass to iperf_test
