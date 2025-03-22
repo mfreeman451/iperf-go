@@ -18,35 +18,53 @@ const addrClient = "127.0.0.1"
 var serverTest, clientTest *IperfTest
 
 func init() {
-
+	// Initialize logging
 	logging.SetLevel(logging.ERROR, "iperf")
 	logging.SetLevel(logging.ERROR, "rudp")
-	/* log settting */
 
+	// Initialize serverTest and clientTest
 	serverTest = NewIperfTest()
 	clientTest = NewIperfTest()
 	serverTest.Init()
 	clientTest.Init()
 
+	// Configure serverTest
 	serverTest.isServer = true
 	serverTest.port = portServer
 
+	// Configure clientTest
 	clientTest.isServer = false
 	clientTest.port = portServer
 	clientTest.addr = addrClient
-
 	clientTest.interval = 1000 // 1000 ms
 	clientTest.duration = 5    // 5 s for test
 	clientTest.streamNum = 1   // 1 stream only
 	clientTest.setTestReverse(false)
 
-	//TCPSetting()
-	RUDPSetting()
-	//KCPSetting()
+	RUDPSetting() // Set protocol and settings
 
-	//client_test.setting.burst = true
-	go serverTest.runServer()
-	time.Sleep(time.Second)
+	// Start server in a goroutine and wait for it to be ready
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				Log.Errorf("Server goroutine panicked: %v", r)
+			}
+		}()
+		serverTest.runServer()
+	}()
+
+	// Wait for server to signal readiness
+	select {
+	case state := <-serverTest.ctrlChan:
+		if state != IPERF_START {
+			Log.Errorf("Expected IPERF_START, got %v", state)
+			panic("Server failed to start correctly")
+		}
+	case <-time.After(5 * time.Second):
+		Log.Errorf("Server failed to start within 5 seconds")
+		panic("Server startup timeout")
+	}
+	time.Sleep(time.Millisecond * 100) // Additional buffer
 }
 
 func TCPSetting() {
@@ -474,6 +492,21 @@ func TestExchangeResult(t *testing.T){
 */
 
 func TestDisplayResult(t *testing.T) {
+	defer func() {
+		serverTest.closeAllStreams()
+		clientTest.closeAllStreams()
+		if serverTest.ctrlConn != nil {
+			if err := serverTest.ctrlConn.Close(); err != nil {
+				t.Logf("Failed to close server ctrlConn: %v", err)
+			}
+		}
+		if clientTest.ctrlConn != nil {
+			if err := clientTest.ctrlConn.Close(); err != nil {
+				t.Logf("Failed to close client ctrlConn: %v", err)
+			}
+		}
+	}()
+
 	if rtn := clientTest.ConnectServer(); rtn < 0 {
 		t.FailNow()
 	}

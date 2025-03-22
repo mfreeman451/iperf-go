@@ -208,28 +208,23 @@ func (test *IperfTest) createServerOmitTimer() int {
 
 func (test *IperfTest) runServer() int {
 	Log.Debugf("Enter run_server")
-
 	if test.serverListen() < 0 {
 		Log.Error("Listen failed")
-
 		return -1
 	}
-
+	fmt.Printf("Server listening on %v\n", test.port)
 	test.state = IPERF_START
-
 	Log.Info("Enter Iperf start state...")
+	test.ctrlChan <- IPERF_START // Signal that server is ready
 
-	// start
-	conn, err := test.listener.Accept()
+	conn, err := test.listener.Accept() // Now safe to block here
 	if err != nil {
 		Log.Error("Accept failed")
-
 		return -2
 	}
-
 	test.ctrlConn = conn
-
 	fmt.Printf("Accept connection from client: %v\n", conn.RemoteAddr())
+
 	// exchange params
 	if test.setSendState(IPERF_EXCHANGE_PARAMS) < 0 {
 		Log.Error("set_send_state error.")

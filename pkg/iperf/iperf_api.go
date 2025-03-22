@@ -645,27 +645,25 @@ func (sp *iperfStream) iperfSend(test *IperfTest) {
 	defer ticker.Stop()
 
 	for {
+		test.mu.Lock()
+		if test.done {
+			test.mu.Unlock()
+			test.ctrlChan <- TEST_END
+			return
+		}
+		test.mu.Unlock()
+
 		select {
-		case t := <-ticker.C:
+		case <-ticker.C:
 			if sp.canSend {
 				n := sp.snd(sp)
-
 				if n < 0 {
-					if n == -1 {
-						Log.Debugf("Iperf send stream closed.")
-
-						return
-					}
-
-					Log.Error("Iperf streams send failed. %v", n)
-
 					return
 				}
-
+				test.mu.Lock()
 				test.bytesSent += uint64(n)
-				test.blocksSent += 1
-
-				Log.Debugf("Stream sent data %v bytes at %v, total %v bytes", n, t, test.bytesSent)
+				test.blocksSent++
+				test.mu.Unlock()
 			}
 		}
 

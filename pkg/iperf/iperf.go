@@ -3,6 +3,7 @@ package iperf
 import (
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -72,6 +73,7 @@ const (
 )
 
 type IperfTest struct {
+	mu        sync.Mutex
 	isServer  bool
 	mode      bool // true for sender. false for receiver
 	reverse   bool // server send?
@@ -273,4 +275,16 @@ type iperf_interval_results struct {
 	/* for udp */
 	interval_packet_cnt uint
 	omitted             uint
+}
+
+func (test *IperfTest) setDone() {
+	test.mu.Lock()
+	defer test.mu.Unlock()
+	test.done = true
+}
+
+func (test *IperfTest) isDone() bool {
+	test.mu.Lock()
+	defer test.mu.Unlock()
+	return test.done
 }

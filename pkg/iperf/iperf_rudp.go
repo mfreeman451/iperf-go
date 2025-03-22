@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	RUDP "github.com/damao33/rudp-go"
@@ -195,7 +196,12 @@ func (r *rudpProto) init(test *IperfTest) int {
 	return 0
 }
 
+var snmpMu sync.Mutex
+
 func (r *rudpProto) statsCallback(test *IperfTest, sp *iperfStream, tempResult *iperf_interval_results) int {
+	snmpMu.Lock()
+	defer snmpMu.Unlock()
+
 	rp := sp.result
 
 	totalRetrans := uint(RUDP.DefaultSnmp.RetransSegs)
