@@ -771,12 +771,18 @@ func (test *IperfTest) createSenderTicker() int {
 // iperfReporterCallback is called by the IperfTest instance when a report needs to be printed.
 func iperfReporterCallback(test *IperfTest) {
 	<-test.chStats // only call this function after stats
-	if test.state == TEST_RUNNING {
-		Log.Debugf("TEST_RUNNING report, role = %v, mode = %v, done = %v", test.isServer, test.mode, test.done)
+
+	test.mu.Lock()
+	currentState := test.state
+	isDone := test.done
+	test.mu.Unlock()
+
+	if currentState == TEST_RUNNING {
+		Log.Debugf("TEST_RUNNING report, role = %v, mode = %v, done = %v", test.isServer, test.mode, isDone)
 
 		test.iperfPrintIntermediate()
-	} else if test.state == TEST_END || test.state == IPERF_DISPLAY_RESULT {
-		Log.Debugf("TEST_END report, role = %v, mode = %v, done = %v", test.isServer, test.mode, test.done)
+	} else if currentState == TEST_END || currentState == IPERF_DISPLAY_RESULT {
+		Log.Debugf("TEST_END report, role = %v, mode = %v, done = %v", test.isServer, test.mode, isDone)
 
 		test.iperfPrintIntermediate()
 		test.iperfPrintResults()

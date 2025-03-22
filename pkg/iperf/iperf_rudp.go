@@ -196,18 +196,9 @@ func (r *rudpProto) statsCallback(test *IperfTest, sp *iperfStream, tempResult *
 
 	rp := sp.result
 
-	totalRetrans := uint(RUDP.DefaultSnmp.RetransSegs)
-	totalLost := uint(RUDP.DefaultSnmp.LostSegs)
-	totalEarlyRetrans := uint(RUDP.DefaultSnmp.EarlyRetransSegs)
-	totalFastRetrans := uint(RUDP.DefaultSnmp.FastRetransSegs)
-	totalRecovers := uint(RUDP.DefaultSnmp.FECRecovered)
-
-	totalInPkts := uint(RUDP.DefaultSnmp.InPkts)
-	totalInSegs := uint(RUDP.DefaultSnmp.InSegs)
-	totalOutPkts := uint(RUDP.DefaultSnmp.OutPkts)
-	totalOutSegs := uint(RUDP.DefaultSnmp.OutSegs)
-
-	repeatSegs := uint(RUDP.DefaultSnmp.RepeatSegs)
+	// Get a thread-safe snapshot of SNMP data
+	totalRetrans, totalLost, totalEarlyRetrans, totalFastRetrans, totalRecovers,
+		totalInPkts, totalInSegs, totalOutPkts, totalOutSegs, repeatSegs := getSafeSnmpSnapshot()
 
 	// retrans
 	tempResult.interval_retrans = totalRetrans - rp.stream_prev_total_retrans
@@ -279,4 +270,24 @@ func (r *rudpProto) teardown(test *IperfTest) int {
 	}
 
 	return 0
+}
+
+func getSafeSnmpSnapshot() (uint, uint, uint, uint, uint, uint, uint, uint, uint, uint) {
+	snmpMu.Lock()
+	defer snmpMu.Unlock()
+
+	// Get a snapshot of all stats we need
+	retransSegs := uint(RUDP.DefaultSnmp.RetransSegs)
+	lostSegs := uint(RUDP.DefaultSnmp.LostSegs)
+	earlyRetransSegs := uint(RUDP.DefaultSnmp.EarlyRetransSegs)
+	fastRetransSegs := uint(RUDP.DefaultSnmp.FastRetransSegs)
+	fecRecovered := uint(RUDP.DefaultSnmp.FECRecovered)
+	inPkts := uint(RUDP.DefaultSnmp.InPkts)
+	inSegs := uint(RUDP.DefaultSnmp.InSegs)
+	outPkts := uint(RUDP.DefaultSnmp.OutPkts)
+	outSegs := uint(RUDP.DefaultSnmp.OutSegs)
+	repeatSegs := uint(RUDP.DefaultSnmp.RepeatSegs)
+
+	return retransSegs, lostSegs, earlyRetransSegs, fastRetransSegs, fecRecovered,
+		inPkts, inSegs, outPkts, outSegs, repeatSegs
 }

@@ -201,25 +201,25 @@ func serverTimerProc(data TimerClientData, now time.Time) {
 
 	test := data.p.(*IperfTest)
 
+	test.mu.Lock()
 	if test.done {
+		test.mu.Unlock()
 		return
 	}
 
 	test.done = true
+	test.mu.Unlock()
 
 	// close all streams
 	for _, sp := range test.streams {
 		err := sp.conn.Close()
 		if err != nil {
 			Log.Errorf("Close stream conn failed. err = %v", err)
-
 			return
 		}
 	}
 
 	test.timer.done <- true
-	//test.ctrl_conn.Close()		//  ctrl conn should be closed at last
-	//log.Infof("Server exceed duration. Close control connection.")
 }
 
 func serverStatsTickerProc(data TimerClientData, now time.Time) {
