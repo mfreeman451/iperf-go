@@ -112,31 +112,25 @@ func (r *rudpProto) send(sp *iperfStream) int {
 }
 
 func (r *rudpProto) recv(sp *iperfStream) int {
-	// recv is blocking
 	n, err := sp.conn.(*RUDP.UDPSession).Read(sp.buffer)
-
 	if err != nil {
 		var serr *net.OpError
 		if errors.As(err, &serr) {
 			Log.Debugf("r conn already close = %v", serr)
-
 			return -1
 		}
-
 		Log.Errorf("r recv err = %T %v", err, err)
-
 		return -2
 	}
-
 	if n < 0 {
 		return n
 	}
+	sp.mu.Lock() // Lock before updating shared fields
 	if sp.test.state == TEST_RUNNING {
 		sp.result.bytes_received += uint64(n)
 		sp.result.bytes_received_this_interval += uint64(n)
 	}
-
-	//log.Debugf("RUDP recv %v bytes of total %v", n, sp.result.bytes_received)
+	sp.mu.Unlock() // Unlock after updates
 	return n
 }
 

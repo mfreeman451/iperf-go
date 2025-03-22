@@ -2,6 +2,7 @@ package iperf
 
 import (
 	"encoding/binary"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,31 +237,39 @@ func handleTestStart(t *testing.T) int {
 
 func handleTestRunning(t *testing.T) int {
 	Log.Info("Client enter Test Running state...")
+
+	var wg sync.WaitGroup
+
 	for i, sp := range clientTest.streams {
+		wg.Add(1)
 		if clientTest.mode == IPERF_SENDER {
-			go sp.iperfSend(clientTest)
-			Log.Infof("Stream %v start sending.", i)
+			go func(i int, sp *iperfStream) {
+				defer wg.Done()
+				sp.iperfSend(clientTest)
+				Log.Infof("Stream %v finished sending.", i)
+			}(i, sp)
 		} else {
-			go sp.iperfRecv(clientTest)
-			Log.Infof("Stream %v start receiving.", i)
+			go func(i int, sp *iperfStream) {
+				defer wg.Done()
+				sp.iperfRecv(clientTest)
+				Log.Infof("Stream %v finished receiving.", i)
+			}(i, sp)
 		}
 	}
 
 	Log.Info("Client all Stream start. Wait for finish...")
-	// wait for send/write end (triggered by timer)
-	//for {
-	//	if client_test.done {
-	//		time.Sleep(time.Millisecond)
-	//		break
-	//	}
-	//}
 
-	for i := 0; i < int(clientTest.streamNum); i++ {
-		s := <-clientTest.ctrlChan
-		assert.Equal(t, s, uint(TEST_END))
+	wg.Wait()
+
+	Log.Infof("Client All Streams closed.")
+	clientTest.done = true
+	if clientTest.statsCallback != nil {
+		clientTest.statsCallback(clientTest)
 	}
-
-	Log.Infof("Client All Send Stream closed.")
+	if clientTest.setSendState(TEST_END) < 0 {
+		Log.Errorf("set_send_state failed. %v", TEST_END)
+		t.FailNow()
+	}
 
 	clientTest.done = true
 
@@ -282,11 +291,15 @@ func handleTestRunning(t *testing.T) int {
 	var totalBytes uint64
 
 	for _, sp := range clientTest.streams {
+		sp.mu.Lock() // Lock for reading
+
 		if clientTest.mode == IPERF_SENDER {
 			totalBytes += sp.result.bytes_sent
 		} else {
 			totalBytes += sp.result.bytes_received
 		}
+
+		sp.mu.Unlock() // Unlock after reading
 	}
 
 	if clientTest.mode == IPERF_SENDER {

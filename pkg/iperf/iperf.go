@@ -143,6 +143,7 @@ type protocol interface {
 }
 
 type iperfStream struct {
+	mu         sync.Mutex
 	role       int //SENDER_STREAM or RECEIVE_STREAM
 	test       *IperfTest
 	result     *iperf_stream_results

@@ -38,7 +38,9 @@ func (test *IperfTest) handleServerCtrlMsg() {
 			//	return
 			//}
 
+			test.mu.Lock() // Lock before modifying state
 			test.state = uint(state)
+			test.mu.Unlock()
 		} else {
 			var serr *net.OpError
 
