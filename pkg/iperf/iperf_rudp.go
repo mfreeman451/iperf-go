@@ -186,6 +186,7 @@ func (r *rudpProto) init(test *IperfTest) int {
 var snmpMu sync.Mutex
 
 func (r *rudpProto) statsCallback(test *IperfTest, sp *iperfStream, tempResult *iperf_interval_results) int {
+	// Lock to prevent race conditions when accessing SNMP data
 	snmpMu.Lock()
 	defer snmpMu.Unlock()
 

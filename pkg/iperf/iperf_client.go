@@ -3,8 +3,10 @@ package iperf
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,12 +18,10 @@ func (test *IperfTest) createStreams() int {
 		conn, err := test.proto.connect(test)
 		if err != nil {
 			Log.Errorf("Connect failed. err = %v", err)
-
 			return -1
 		}
 
 		var sp *iperfStream
-
 		if test.mode == IPERF_SENDER {
 			sp = test.newStream(conn, SENDER_STREAM)
 		} else {
@@ -36,74 +36,112 @@ func (test *IperfTest) createStreams() int {
 
 func (test *IperfTest) createClientTimer() int {
 	now := time.Now()
-	cd := TimerClientData{p: test}
-
-	test.timer = timerCreate(now, clientTimerProc, cd, test.duration*1000) // convert sec to ms
+	test.timer = test.timerCreate(now, test.duration*1000) // convert sec to ms
 	times := test.duration * 1000 / test.interval
-
-	test.statsTicker = tickerCreate(now, clientStatsTickerProc, cd, test.interval, times-1)
-	test.reportTicker = tickerCreate(now, clientReportTickerProc, cd, test.interval, times-1)
+	test.statsTicker = test.tickerCreate(now, test.interval, times-1)
+	test.reportTicker = test.tickerCreate(now, test.interval, times-1)
 
 	if test.timer.timer == nil || test.statsTicker.ticker == nil || test.reportTicker.ticker == nil {
 		Log.Error("timer create failed.")
+		return -1
 	}
 
 	return 0
 }
 
-func clientTimerProc(data TimerClientData, now time.Time) {
+func (test *IperfTest) timerCreate(now time.Time, dur uint /* in ms */) ITimer {
+	realDur := time.Now().Sub(now) + time.Duration(dur)*time.Millisecond
+	timer := time.NewTimer(realDur)
+	done := make(chan bool, 1)
+
+	go func() {
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				Log.Debugf("Timer recv done. dur: %v", dur)
+				return
+			case t := <-timer.C:
+				test.clientTimerProc(t)
+			}
+		}
+	}()
+
+	return ITimer{timer: timer, done: done}
+}
+
+func (test *IperfTest) tickerCreate(now time.Time, interval, maxTimes uint /* in ms */) ITicker {
+	ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
+	done := make(chan bool, 1)
+
+	go func() {
+		var cnt uint
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				Log.Debugf("Ticker recv done. interval:%v", interval)
+				return
+			case t := <-ticker.C:
+				if cnt >= maxTimes {
+					return
+				}
+				if cnt%2 == 0 {
+					test.clientStatsTickerProc(t)
+				} else {
+					test.clientReportTickerProc(t)
+				}
+				cnt++
+			}
+		}
+	}()
+
+	return ITicker{ticker: ticker, done: done}
+}
+
+func (test *IperfTest) clientTimerProc(now time.Time) {
 	Log.Debugf("Enter client_timer_proc")
-
-	test := data.p.(*IperfTest)
-
+	test.mu.Lock()
 	test.timer.done <- true
-
-	test.done = true // will end send/recv in iperf_send/iperf_recv, and then triggered TEST_END
-
+	test.done = true // Protected write
+	test.mu.Unlock()
 	test.timer.timer = nil
 }
 
-func clientStatsTickerProc(data TimerClientData, now time.Time) {
-	test := data.p.(*IperfTest)
-
-	if test.done {
+func (test *IperfTest) clientStatsTickerProc(now time.Time) {
+	test.mu.Lock()
+	if test.done { // Protected read
+		test.mu.Unlock()
 		return
 	}
-
+	test.mu.Unlock()
 	if test.statsCallback != nil {
 		test.statsCallback(test)
 	}
 }
 
-func clientReportTickerProc(data TimerClientData, now time.Time) {
-	test := data.p.(*IperfTest)
-
-	if test.done {
+func (test *IperfTest) clientReportTickerProc(now time.Time) {
+	test.mu.Lock()
+	if test.done { // Protected read
+		test.mu.Unlock()
 		return
 	}
-
+	test.mu.Unlock()
 	if test.reporterCallback != nil {
 		test.reporterCallback(test)
 	}
 }
 
 func (test *IperfTest) createClientOmitTimer() int {
-	// undo, depend on which kind of timer
+	// TODO: Implement if needed
 	return 0
-}
-
-func sendTickerProc(data TimerClientData, now time.Time) {
-	sp := data.p.(*iperfStream)
-	sp.test.checkThrottle(sp, now)
 }
 
 func (test *IperfTest) clientEnd() {
 	Log.Debugf("Enter client_end")
 	for _, sp := range test.streams {
-		err := sp.conn.Close()
-		if err != nil {
+		if err := sp.conn.Close(); err != nil {
 			Log.Errorf("Stream close failed. err = %v", err)
-
 			return
 		}
 	}
@@ -120,13 +158,10 @@ func (test *IperfTest) clientEnd() {
 	Log.Infof("Client Enter IPerf Done...")
 
 	if test.ctrlConn != nil {
-		err := test.ctrlConn.Close()
-		if err != nil {
+		if err := test.ctrlConn.Close(); err != nil {
 			Log.Errorf("Ctrl conn close failed. err = %v", err)
-
 			return
 		}
-
 		test.ctrlChan <- IPERF_DONE // Ensure main loop exits
 	}
 }
@@ -143,8 +178,19 @@ func (test *IperfTest) handleClientCtrlMsg() {
 		test.mu.Unlock()
 
 		Log.Debugf("handleClientCtrlMsg waiting for state")
-		n, err := test.ctrlConn.Read(buf)
+		test.ctrlConn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		n, err := io.ReadFull(test.ctrlConn, buf)
+		test.ctrlConn.SetReadDeadline(time.Time{}) // Clear deadline
+
 		if err != nil {
+			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
+				Log.Infof("Server control connection closed")
+				test.mu.Lock()
+				test.state = IPERF_DONE
+				test.ctrlChan <- IPERF_DONE
+				test.mu.Unlock()
+				return
+			}
 			Log.Errorf("ctrl_conn read failed. err=%T, %v", err, err)
 			test.mu.Lock()
 			test.state = IPERF_DONE
@@ -153,15 +199,30 @@ func (test *IperfTest) handleClientCtrlMsg() {
 			return
 		}
 
-		state := binary.LittleEndian.Uint32(buf[:])
-		Log.Debugf("Client Ctrl conn receive n = %v state = [%v]", n, state)
+		state := binary.LittleEndian.Uint32(buf[:n])
+		Log.Debugf("Client recv %d bytes, data = %x, state = %v", n, buf[:n], state)
+
+		// Send acknowledgment
+		ack := make([]byte, 4)
+		binary.LittleEndian.PutUint32(ack, ACK_SIGNAL)
+		an, err := test.ctrlConn.Write(ack)
+		if err != nil || an != 4 {
+			Log.Errorf("Failed to send acknowledgment: %v, bytes sent: %d", err, an)
+			test.mu.Lock()
+			test.state = IPERF_DONE
+			test.ctrlChan <- IPERF_DONE
+			test.mu.Unlock()
+			return
+		}
+		Log.Debugf("Sent acknowledgment bytes = %x for state = %v", ack, state)
+
+		Log.Debugf("Sent acknowledgment %x for state = %v", ACK_SIGNAL, state)
 
 		test.mu.Lock()
 		test.state = uint(state)
 		test.mu.Unlock()
 
 		Log.Infof("Client Enter %v state...", state)
-
 		switch state {
 		case IPERF_EXCHANGE_PARAMS:
 			if rtn := test.exchangeParams(); rtn < 0 {
@@ -172,6 +233,14 @@ func (test *IperfTest) handleClientCtrlMsg() {
 				return
 			}
 		case IPERF_CREATE_STREAM:
+			Log.Debugf("Received IPERF_CREATE_STREAM, setting up protocol listener and streams")
+			test.mu.Lock()
+			if len(test.streams) > 0 {
+				Log.Debugf("Streams already created, skipping")
+				test.mu.Unlock()
+				break
+			}
+			test.mu.Unlock()
 			if rtn := test.createStreams(); rtn < 0 {
 				Log.Errorf("create_streams failed: %v", rtn)
 				test.mu.Lock()
@@ -242,11 +311,7 @@ func (test *IperfTest) handleClientCtrlMsg() {
 			test.state = oldState
 			test.mu.Unlock()
 		default:
-			Log.Errorf("Unexpected state %v", state)
-			test.mu.Lock()
-			test.ctrlChan <- IPERF_DONE
-			test.mu.Unlock()
-			return
+			Log.Infof("Ignoring unexpected state = %v", state)
 		}
 	}
 }
@@ -255,20 +320,17 @@ func (test *IperfTest) ConnectServer() int {
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", test.addr+":"+strconv.Itoa(int(test.port)))
 	if err != nil {
 		Log.Errorf("Resolve TCP Addr failed. err = %v, addr = %v", err, test.addr+strconv.Itoa(int(test.port)))
-
 		return -1
 	}
 
 	conn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
 		Log.Errorf("Connect TCP Addr failed. err = %v, addr = %v", err, test.addr+strconv.Itoa(int(test.port)))
-
 		return -1
 	}
 
 	test.ctrlConn = conn
 	fmt.Printf("Connect to server %v succeed.\n", test.addr+":"+strconv.Itoa(int(test.port)))
-
 	return 0
 }
 
@@ -313,7 +375,9 @@ func (test *IperfTest) runClient() int {
 					return -1
 				}
 				Log.Infof("Client all Stream closed.")
+				test.mu.Lock()
 				test.done = true
+				test.mu.Unlock()
 				if test.statsCallback != nil {
 					test.statsCallback(test)
 				}
@@ -325,11 +389,17 @@ func (test *IperfTest) runClient() int {
 			} else if state == IPERF_DONE {
 				isIperfDone = true
 			} else {
-				Log.Debugf("Channel Unhandle state [%v]", state)
+				Log.Debugf("Channel Unhandled state [%v]", state)
 			}
 		}
 	}
 
 	Log.Infof("runClient completed")
 	return 0
+}
+
+// Leave sendTickerProc as is for now, but it could be refactored later if needed
+func sendTickerProc(data TimerClientData, now time.Time) {
+	sp := data.p.(*iperfStream)
+	sp.test.checkThrottle(sp, now)
 }

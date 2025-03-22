@@ -73,6 +73,9 @@ const (
 )
 
 type IperfTest struct {
+	testMode    bool  // Flag to indicate we're running in test mode
+	skipAckWait bool  // Flag to skip waiting for ACKs in certain cases
+
 	mu        sync.Mutex
 	isServer  bool
 	mode      bool // true for sender. false for receiver

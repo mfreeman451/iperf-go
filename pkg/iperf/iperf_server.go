@@ -37,13 +37,8 @@ func (test *IperfTest) handleServerCtrlMsg() {
 		return
 	}
 
-	// First, expect exchangeParams JSON
-	Log.Debugf("handleServerCtrlMsg waiting for initial params")
-	test.mu.Lock()
-	currentState := test.state
-	test.mu.Unlock()
-
-	if currentState == IPERF_EXCHANGE_PARAMS {
+	// Handle initial params
+	if test.state == IPERF_EXCHANGE_PARAMS {
 		if test.getParams() < 0 {
 			Log.Errorf("Initial getParams failed")
 			test.mu.Lock()
@@ -52,8 +47,7 @@ func (test *IperfTest) handleServerCtrlMsg() {
 			test.ctrlChan <- SERVER_TERMINATE
 			return
 		}
-		Log.Infof("Server received params, moving to IPERF_CREATE_STREAM")
-		if test.setSendState(IPERF_CREATE_STREAM) < 0 {
+		if test.setSendState(IPERF_CREATE_STREAM) < 0 { // This will wait for client ACK
 			Log.Errorf("set_send_state error for IPERF_CREATE_STREAM")
 			test.mu.Lock()
 			test.state = SERVER_TERMINATE
@@ -61,13 +55,6 @@ func (test *IperfTest) handleServerCtrlMsg() {
 			test.ctrlChan <- SERVER_TERMINATE
 			return
 		}
-	} else {
-		Log.Errorf("Server not in IPERF_EXCHANGE_PARAMS state, current state: %v", currentState)
-		test.mu.Lock()
-		test.state = SERVER_TERMINATE
-		test.mu.Unlock()
-		test.ctrlChan <- SERVER_TERMINATE
-		return
 	}
 
 	buf := make([]byte, 4)
@@ -75,7 +62,6 @@ func (test *IperfTest) handleServerCtrlMsg() {
 		Log.Debugf("handleServerCtrlMsg waiting for control message")
 		n, err := test.ctrlConn.Read(buf)
 		if err != nil {
-			Log.Errorf("Ctrl conn read failed: %v", err)
 			if err == io.EOF || strings.Contains(err.Error(), "use of closed network connection") {
 				Log.Infof("Client control connection closed")
 				test.mu.Lock()
@@ -84,6 +70,7 @@ func (test *IperfTest) handleServerCtrlMsg() {
 				test.ctrlChan <- IPERF_DONE
 				return
 			}
+			Log.Errorf("Ctrl conn read failed: %v", err)
 			test.mu.Lock()
 			test.state = SERVER_TERMINATE
 			test.mu.Unlock()
@@ -92,14 +79,27 @@ func (test *IperfTest) handleServerCtrlMsg() {
 		}
 
 		state := binary.LittleEndian.Uint32(buf[:])
-
 		Log.Debugf("Ctrl conn received n = %v state = [%v], raw bytes = %x", n, state, buf[:n])
+
+		// Send fixed ACK
+		ack := make([]byte, 4)
+		binary.LittleEndian.PutUint32(ack, ACK_SIGNAL)
+		if _, err := test.ctrlConn.Write(ack); err != nil {
+			Log.Errorf("Failed to send acknowledgment: %v", err)
+			test.mu.Lock()
+			test.state = SERVER_TERMINATE
+			test.mu.Unlock()
+			test.ctrlChan <- SERVER_TERMINATE
+			return
+		}
+		Log.Debugf("Sent acknowledgment %x for state = %v", ACK_SIGNAL, state)
 
 		test.mu.Lock()
 		test.state = uint(state)
 		test.mu.Unlock()
 
 		Log.Infof("Server Enter state %v", state)
+
 		switch state {
 		case TEST_START:
 			Log.Debugf("Received TEST_START")
@@ -171,13 +171,8 @@ func (test *IperfTest) handleServerCtrlMsg() {
 			return
 
 		default:
-			Log.Errorf("Unexpected situation with state = %v, raw bytes = %x", state, buf[:n])
-
-			test.mu.Lock()
-			test.state = SERVER_TERMINATE
-			test.mu.Unlock()
-			test.ctrlChan <- SERVER_TERMINATE
-			return
+			Log.Infof("Ignoring unexpected state = %v, raw bytes = %x", state, buf[:n])
+			continue // Skip instead of terminating
 		}
 	}
 }
@@ -279,6 +274,7 @@ func (test *IperfTest) runServer(wg *sync.WaitGroup) int {
 	}
 	test.ctrlConn = conn
 	test.ctrlConn.SetDeadline(time.Now().Add(30 * time.Second))
+
 	fmt.Printf("Accept connection from client: %v\n", conn.RemoteAddr())
 
 	// Signal the client to send params
@@ -295,7 +291,7 @@ func (test *IperfTest) runServer(wg *sync.WaitGroup) int {
 	for !isIperfDone {
 		select {
 		case state := <-test.ctrlChan:
-			Log.Debugf("Ctrl channel receive state [%v]", state)
+			Log.Debugf("Ctrl channel receive state [%v] (0x%x)", state, state)
 
 			switch state {
 			case IPERF_DONE:
